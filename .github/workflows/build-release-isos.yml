@@ -1,10 +1,10 @@
-name: Build release ISOs
+name: Build installer ISOs
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v1.0.0). Defaults to iso-YYYYMMDD."
+        description: "Version label for the ISO artifacts. Defaults to YYYYMMDD."
         required: false
         type: string
   push:
@@ -12,7 +12,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   IMAGE_NAME: p03-atomic
@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   isos:
-    name: Build ISOs and publish release
+    name: Build ISOs
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -36,15 +36,15 @@ jobs:
         with:
           remove-codeql: true
 
-      - name: Determine release tag
-        id: tag
+      - name: Determine version label
+        id: ver
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "label=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           elif [ -n "${{ inputs.tag }}" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "label=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=iso-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+            echo "label=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build ISOs
@@ -90,26 +90,20 @@ jobs:
 
           ls -lh dist
 
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          set -euxo pipefail
-          cat > /tmp/notes.md <<EOF
-          Installer ISOs for **p03-atomic** (\`${TAG}\`).
+      - name: Upload standard ISO
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ env.IMAGE_NAME }}-standard-${{ steps.ver.outputs.label }}
+          path: dist/${{ env.IMAGE_NAME }}-standard.iso*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
-          | ISO | NVIDIA | Boots on update tracks |
-          | --- | --- | --- |
-          | \`${IMAGE_NAME}-standard.iso\` | no (Mesa / AMD / Intel) | \`${REGISTRY_REPO}:standard\` |
-          | \`${IMAGE_NAME}-nvidia.iso\` | yes (proprietary userspace) | \`${REGISTRY_REPO}:latest\` |
-
-          Verify a download: \`sha256sum -c <file>.sha256\`
-          EOF
-
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --title "p03-atomic ${TAG}" \
-              --notes-file /tmp/notes.md
-          fi
-          gh release upload "$TAG" dist/* --clobber
+      - name: Upload NVIDIA ISO
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ env.IMAGE_NAME }}-nvidia-${{ steps.ver.outputs.label }}
+          path: dist/${{ env.IMAGE_NAME }}-nvidia.iso*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
