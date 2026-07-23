@@ -1,0 +1,3 @@
+kargs = [
+    "split_lock_detect=off",
+]

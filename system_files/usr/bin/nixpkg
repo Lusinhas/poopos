@@ -1,0 +1,188 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+PROFILE="/nix/var/nix/profiles/apps"
+FLAKE="/usr/share/nix-image"
+DEFAULT_FLAKE_REF="path:${FLAKE}#default"
+
+export PATH="/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/apps/bin:${PATH}"
+NIXFLAGS=(--extra-experimental-features "nix-command flakes")
+
+prog="${0##*/}"
+c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[1;32m'; c_red=$'\033[1;31m'; c_off=$'\033[0m'
+
+die()  { printf '%s%s%s %s\n' "$c_red" "error:" "$c_off" "$*" >&2; exit 1; }
+info() { printf '%s==>%s %s\n' "$c_grn" "$c_off" "$*"; }
+
+have_nix() { command -v nix >/dev/null 2>&1; }
+
+need_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        exec sudo --preserve-env=PATH "$0" "$@"
+    fi
+}
+
+resolve_ref() {
+    local tok="$1"
+    case "$tok" in
+        *:*|*\#*) printf '%s\n' "$tok" ;;
+        helium-browser) printf 'path:%s#helium-browser\n' "$FLAKE" ;;
+        *) printf 'nixpkgs#%s\n' "$tok" ;;
+    esac
+}
+
+usage() {
+    cat <<EOF
+${c_bold}nixpkg${c_off} — transactional Nix package manager (shared system profile)
+
+${c_bold}USAGE${c_off}
+    ${prog} <command> [args]
+
+${c_bold}PACKAGE COMMANDS${c_off}
+    add, install <pkg>...   Install package(s) into the system profile
+    remove, rm <pkg>...     Remove package(s) from the system profile
+    upgrade [pkg|'.*']      Upgrade everything (default) or a matching package
+    list, ls                List installed packages (with indices)
+    search <query>          Search nixpkgs for a package
+    info <pkg>              Show metadata for a nixpkgs package
+
+${c_bold}DECLARED SET${c_off}
+    sync                    Re-apply the image's declared app set (${DEFAULT_FLAKE_REF})
+    edit                    Open the declared flake (${FLAKE}/flake.nix)
+
+${c_bold}TRANSACTIONS / HISTORY${c_off}
+    history                 Show profile generations
+    rollback [gen]          Roll back to the previous (or given) generation
+    diff                    Diff the two most recent generations
+    wipe-history            Delete old generations (keep current)
+
+${c_bold}EPHEMERAL${c_off}
+    shell <pkg>...          Drop into a shell with pkg(s) available (not installed)
+    run <pkg> [-- args]     Run a package without installing it
+
+${c_bold}MAINTENANCE${c_off}
+    gc                      Garbage-collect unreferenced store paths
+    status                  Show profile path, generation and store size
+    help                    This message
+
+${c_dim}Package tokens: bare names resolve to nixpkgs#<name>; flake refs
+(nixpkgs#x, github:o/r#x, path:/p#x) are passed through unchanged.${c_off}
+EOF
+}
+
+ensure_ready() {
+    have_nix || die "nix is not installed yet. First boot runs 'nix-first-boot.service'; check: systemctl status nix-first-boot.service"
+}
+
+cmd="${1:-help}"; shift || true
+
+case "$cmd" in
+    add|install)
+        [ "$#" -ge 1 ] || die "usage: ${prog} add <pkg>..."
+        need_root "$cmd" "$@"
+        ensure_ready
+        refs=(); for t in "$@"; do refs+=("$(resolve_ref "$t")"); done
+        info "Installing: ${refs[*]}"
+        nix "${NIXFLAGS[@]}" profile install --profile "$PROFILE" "${refs[@]}"
+        info "Done. New generation created (roll back with '${prog} rollback')."
+        ;;
+    remove|rm|uninstall)
+        [ "$#" -ge 1 ] || die "usage: ${prog} remove <pkg>..."
+        need_root "$cmd" "$@"
+        ensure_ready
+        info "Removing: $*"
+        nix "${NIXFLAGS[@]}" profile remove --profile "$PROFILE" "$@"
+        ;;
+    upgrade|update)
+        need_root "$cmd" "$@"
+        ensure_ready
+        local_sel="${1:-.*}"
+        info "Upgrading: ${local_sel}"
+        nix "${NIXFLAGS[@]}" profile upgrade --profile "$PROFILE" "$local_sel"
+        ;;
+    list|ls)
+        ensure_ready
+        nix "${NIXFLAGS[@]}" profile list --profile "$PROFILE"
+        ;;
+    search)
+        [ "$#" -ge 1 ] || die "usage: ${prog} search <query>"
+        ensure_ready
+        nix "${NIXFLAGS[@]}" search nixpkgs "$@"
+        ;;
+    info)
+        [ "$#" -eq 1 ] || die "usage: ${prog} info <pkg>"
+        ensure_ready
+        nix "${NIXFLAGS[@]}" eval --raw "nixpkgs#$1.meta.description" 2>/dev/null && echo || \
+            nix "${NIXFLAGS[@]}" search nixpkgs "^$1$"
+        ;;
+    sync)
+        need_root "$cmd" "$@"
+        ensure_ready
+        info "Re-applying declared app set: ${DEFAULT_FLAKE_REF}"
+        if nix "${NIXFLAGS[@]}" profile list --profile "$PROFILE" 2>/dev/null | grep -q "$FLAKE"; then
+            nix "${NIXFLAGS[@]}" profile upgrade --profile "$PROFILE" '.*'
+        else
+            nix "${NIXFLAGS[@]}" profile install --profile "$PROFILE" "$DEFAULT_FLAKE_REF"
+        fi
+        ;;
+    edit)
+        "${EDITOR:-nano}" "${FLAKE}/flake.nix"
+        ;;
+    history)
+        ensure_ready
+        nix "${NIXFLAGS[@]}" profile history --profile "$PROFILE"
+        ;;
+    rollback)
+        need_root "$cmd" "$@"
+        ensure_ready
+        if [ "$#" -ge 1 ]; then
+            nix "${NIXFLAGS[@]}" profile rollback --profile "$PROFILE" --to "$1"
+        else
+            nix "${NIXFLAGS[@]}" profile rollback --profile "$PROFILE"
+        fi
+        ;;
+    diff)
+        ensure_ready
+        nix "${NIXFLAGS[@]}" profile diff-closures --profile "$PROFILE" | tail -n 40
+        ;;
+    wipe-history)
+        need_root "$cmd" "$@"
+        ensure_ready
+        nix "${NIXFLAGS[@]}" profile wipe-history --profile "$PROFILE"
+        ;;
+    shell)
+        [ "$#" -ge 1 ] || die "usage: ${prog} shell <pkg>..."
+        ensure_ready
+        refs=(); for t in "$@"; do refs+=("$(resolve_ref "$t")"); done
+        exec nix "${NIXFLAGS[@]}" shell "${refs[@]}"
+        ;;
+    run)
+        [ "$#" -ge 1 ] || die "usage: ${prog} run <pkg> [-- args]"
+        ensure_ready
+        ref="$(resolve_ref "$1")"; shift
+        exec nix "${NIXFLAGS[@]}" run "$ref" -- "$@"
+        ;;
+    gc)
+        need_root "$cmd" "$@"
+        ensure_ready
+        info "Collecting garbage"
+        nix "${NIXFLAGS[@]}" store gc
+        ;;
+    status)
+        printf '%sProfile:%s   %s\n' "$c_bold" "$c_off" "$PROFILE"
+        if [ -L "$PROFILE" ]; then
+            printf '%sCurrent:%s   %s\n' "$c_bold" "$c_off" "$(readlink "$PROFILE")"
+        else
+            printf '%sCurrent:%s   (not yet created — run first boot / nixpkg sync)\n' "$c_bold" "$c_off"
+        fi
+        printf '%sStore:%s     %s\n' "$c_bold" "$c_off" "$(du -sh /nix/store 2>/dev/null | cut -f1 || echo '?')"
+        have_nix && nix "${NIXFLAGS[@]}" profile list --profile "$PROFILE" 2>/dev/null | grep -c 'Name:' \
+            | xargs -I{} printf '%sPackages:%s  {}\n' "$c_bold" "$c_off" || true
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        die "unknown command '$cmd' (try '${prog} help')"
+        ;;
+esac

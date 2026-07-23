@@ -1,0 +1,87 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+MOK_DER=/etc/kernel/certs/p03-kernel/mok.der
+prog="${0##*/}"
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"; }
+
+usage() {
+    cat <<EOF
+${prog} — P03 bootc host control
+
+USAGE
+    ${prog} <command> [args]
+
+COMMANDS
+    status            Kernel, image, Secure Boot and Nix summary
+    kernel            Show running + installed P03 kernel
+    enroll-mok        Enroll the P03 kernel signing key (Secure Boot / NVIDIA)
+    tpm-enroll <dev>  Bind LUKS auto-unlock to the TPM2 (PCR 7) for <dev>
+                      e.g. ${prog} tpm-enroll /dev/disk/by-partlabel/luks
+    recovery-key <dev>  Add a LUKS recovery key
+    update            Fetch + stage the latest image (bootc upgrade)
+    rollback          Roll back to the previous image (bootc rollback)
+    health            Run the full 'doctor' report
+    first-boot        Show/replay first-boot Nix realization
+    help              This message
+EOF
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+    status)
+        echo "== kernel =="; uname -srm
+        echo; echo "== image =="; bootc status 2>/dev/null || echo "bootc status unavailable"
+        echo; echo "== secure boot =="; bootctl status 2>/dev/null | grep -iE 'secure boot|setup' || true
+        echo; echo "== nix =="; (nixpkg status 2>/dev/null || echo "nix not ready")
+        ;;
+    kernel)
+        echo "running:   $(uname -r)"
+        echo "installed: $(rpm -q kernel-p03-core 2>/dev/null || echo '?')"
+        [ -f /usr/share/bootc-p03/nvidia-version ] && \
+            echo "nvidia:    $(cat /usr/share/bootc-p03/nvidia-version) (kernel-p03-nvidia-open)"
+        ;;
+    enroll-mok)
+        need_root "$cmd" "$@"
+        [ -f "$MOK_DER" ] || die "MOK not found at $MOK_DER (kernel-p03 not installed?)"
+        echo "Enrolling $MOK_DER. You will set a one-time password, then confirm in"
+        echo "the blue MOK Manager screen on next reboot."
+        mokutil --import "$MOK_DER"
+        ;;
+    tpm-enroll)
+        need_root "$cmd" "$@"
+        dev="${1:-}"; [ -n "$dev" ] || die "usage: ${prog} tpm-enroll <luks-device>"
+        [ -b "$dev" ] || die "not a block device: $dev"
+        systemd-cryptenroll --wipe-slot=tpm2 "$dev" || true
+        systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 "$dev"
+        echo "Add 'tpm2-device=auto' to the device's crypttab entry if not already present."
+        ;;
+    recovery-key)
+        need_root "$cmd" "$@"
+        dev="${1:-}"; [ -n "$dev" ] || die "usage: ${prog} recovery-key <luks-device>"
+        systemd-cryptenroll --recovery-key "$dev"
+        ;;
+    update)
+        need_root "$cmd" "$@"
+        bootc upgrade
+        ;;
+    rollback)
+        need_root "$cmd" "$@"
+        bootc rollback
+        ;;
+    health)
+        exec doctor
+        ;;
+    first-boot)
+        systemctl status nix-first-boot.service --no-pager 2>/dev/null || true
+        if [ "${1:-}" = "--replay" ]; then
+            need_root "$cmd" "$@"
+            rm -f /var/lib/bootc-p03/first-boot.done
+            systemctl restart nix-first-boot.service
+            journalctl -u nix-first-boot.service -f
+        fi
+        ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command '$cmd' (try '${prog} help')" ;;
+esac

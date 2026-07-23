@@ -1,0 +1,3 @@
+docker:
+    ghcr.io/lusinhas/p03-atomic:
+        use-sigstore-attachments: true

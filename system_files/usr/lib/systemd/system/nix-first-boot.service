@@ -1,0 +1,16 @@
+[Unit]
+Description=Install Determinate Nix and realize declared apps (first boot)
+Documentation=https://github.com/DeterminateSystems/nix-installer
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=!/var/lib/bootc-p03/first-boot.done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+ExecStart=/usr/libexec/bootc-p03/nix-first-boot.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

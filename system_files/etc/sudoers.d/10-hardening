@@ -1,0 +1,7 @@
+Defaults lecture=never
+Defaults timestamp_timeout=10
+Defaults !pwfeedback
+Defaults use_pty
+Defaults log_input, log_output
+
+%wheel ALL=(ALL:ALL) ALL

@@ -1,0 +1,8 @@
+*_build*
+output/
+previous.manifest.json
+changelog.md
+output.env
+result
+result-*
+cosign.key

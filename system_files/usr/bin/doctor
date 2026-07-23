@@ -1,0 +1,100 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+report() { printf '%-6s %-22s %s\n' "$1" "$2" "$3"; }
+
+if bootctl status 2>/dev/null | grep -qiE 'secure boot: *enabled'; then
+    report OK secure-boot "firmware reports enabled"
+else
+    report WARN secure-boot "not enabled (enroll P03 MOK: p03ctl enroll-mok)"
+fi
+
+if command -v mokutil >/dev/null 2>&1 && mokutil --list-enrolled 2>/dev/null | grep -qi 'p03'; then
+    report OK kernel-mok "P03 signing key enrolled"
+else
+    report WARN kernel-mok "P03 MOK not detected (needed for SB + NVIDIA)"
+fi
+
+kv="$(uname -r)"
+if printf '%s' "$kv" | grep -q 'p03'; then
+    report OK kernel "$kv"
+else
+    report WARN kernel "running $kv (expected *.p03.*)"
+fi
+
+if resolvectl status 2>/dev/null | grep -qiE '\+DNSOverTLS|DNSOverTLS[=: ]*(yes|opportunistic)'; then
+    report OK dns-over-tls "active"
+else
+    report WARN dns-over-tls "not active"
+fi
+
+if systemctl is-active --quiet firewalld.service 2>/dev/null; then
+    report OK firewall "firewalld active"
+elif systemctl is-active --quiet nftables.service 2>/dev/null; then
+    report OK firewall "nftables active"
+else
+    report FAIL firewall "no firewall active"
+fi
+
+if zramctl 2>/dev/null | grep -q zram || swapon --show 2>/dev/null | grep -q zram; then
+    report OK zram "swap device active"
+else
+    report WARN zram "no zram device"
+fi
+
+if systemctl is-active --quiet scx_loader.service 2>/dev/null || \
+   [ -e /sys/kernel/sched_ext/root/ops ] 2>/dev/null; then
+    sched="$(cat /sys/kernel/sched_ext/root/ops 2>/dev/null || echo scx_loader)"
+    report OK scx-scheduler "$sched"
+else
+    report WARN scx-scheduler "no scx scheduler active"
+fi
+
+systemctl is-active --quiet ananicy-cpp.service 2>/dev/null \
+    && report OK ananicy "ananicy-cpp active" \
+    || report WARN ananicy "ananicy-cpp not active"
+
+command -v gamemoded >/dev/null 2>&1 \
+    && report OK gamemode "gamemoded available" \
+    || report WARN gamemode "gamemoded not found"
+
+systemctl is-active --quiet usbguard.service 2>/dev/null \
+    && report OK usbguard "active" \
+    || report WARN usbguard "not active"
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+    if nvidia-smi >/dev/null 2>&1; then
+        report OK nvidia "driver loaded ($(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1))"
+    else
+        report WARN nvidia "userspace present but driver not loaded"
+    fi
+else
+    report OK nvidia "no proprietary userspace (AMD/Intel/nouveau path)"
+fi
+
+if [ -x /nix/var/nix/profiles/default/bin/nix ] || command -v nix >/dev/null 2>&1; then
+    n="$(/nix/var/nix/profiles/apps/bin/nix --version 2>/dev/null || nix --version 2>/dev/null || echo installed)"
+    report OK nix "$n"
+    if [ -L /nix/var/nix/profiles/apps ]; then
+        report OK nix-apps "profile present"
+    else
+        report WARN nix-apps "apps profile not realized (run: nixpkg sync)"
+    fi
+else
+    if systemctl is-active --quiet nix-first-boot.service 2>/dev/null; then
+        report WARN nix "first-boot install in progress"
+    else
+        report WARN nix "not installed (check nix-first-boot.service)"
+    fi
+fi
+
+caps="$(systemctl show nix-daemon -p MemoryHigh -p CPUWeight 2>/dev/null | tr '\n' ' ')"
+if printf '%s' "$caps" | grep -q 'MemoryHigh=[0-9]'; then
+    report OK nix-daemon "$caps"
+else
+    report WARN nix-daemon "resource caps not applied yet"
+fi
+
+report INFO tcp-listen "$(ss -tlnH 2>/dev/null | wc -l) listening sockets"
+
+exit 0

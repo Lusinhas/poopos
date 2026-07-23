@@ -1,0 +1,8 @@
+kargs = [
+    "transparent_hugepage=madvise",
+    "threadirqs",
+    "preempt=full",
+    "nowatchdog",
+    "tsc=reliable",
+    "clocksource=tsc",
+]
