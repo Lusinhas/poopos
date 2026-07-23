@@ -1,0 +1,115 @@
+name: Build release ISOs
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0). Defaults to iso-YYYYMMDD."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  IMAGE_NAME: p03-atomic
+  REGISTRY_REPO: ghcr.io/lusinhas/p03-atomic
+  BIB_IMAGE: quay.io/centos-bootc/bootc-image-builder:latest
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isos:
+    name: Build ISOs and publish release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Maximize build space
+        uses: ublue-os/remove-unwanted-software@cc0becac701cf642c8f0a6613bbdaf5dc36b259e
+        with:
+          remove-codeql: true
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=iso-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build ISOs
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+
+          build_variant() {
+            local name="$1" nvidia="$2" track="$3"
+            local img="localhost/${IMAGE_NAME}:${name}"
+
+            sudo podman build \
+              --build-arg "INCLUDE_NVIDIA=${nvidia}" \
+              --tag "${img}" \
+              --file Containerfile .
+
+            sed "s|${REGISTRY_REPO}:latest|${REGISTRY_REPO}:${track}|" \
+              disk_config/iso.toml > "/tmp/iso-${name}.toml"
+
+            local out
+            out="$(mktemp -d)"
+            sudo podman run --rm --privileged --pull=newer --net=host \
+              --security-opt label=type:unconfined_t \
+              -v "/tmp/iso-${name}.toml:/config.toml:ro" \
+              -v "${out}:/output" \
+              -v /var/lib/containers/storage:/var/lib/containers/storage \
+              "${BIB_IMAGE}" \
+              --type anaconda-iso \
+              --use-librepo=True \
+              "${img}"
+
+            sudo mv "${out}/bootiso/install.iso" "dist/${IMAGE_NAME}-${name}.iso"
+            sudo chown "${USER}:${USER}" "dist/${IMAGE_NAME}-${name}.iso"
+            ( cd dist && sha256sum "${IMAGE_NAME}-${name}.iso" > "${IMAGE_NAME}-${name}.iso.sha256" )
+
+            sudo podman rmi -f "${img}" || true
+            sudo rm -rf "${out}"
+            df -h /
+          }
+
+          build_variant standard 0 standard
+          build_variant nvidia 1 latest
+
+          ls -lh dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euxo pipefail
+          cat > /tmp/notes.md <<EOF
+          Installer ISOs for **p03-atomic** (\`${TAG}\`).
+
+          | ISO | NVIDIA | Boots on update tracks |
+          | --- | --- | --- |
+          | \`${IMAGE_NAME}-standard.iso\` | no (Mesa / AMD / Intel) | \`${REGISTRY_REPO}:standard\` |
+          | \`${IMAGE_NAME}-nvidia.iso\` | yes (proprietary userspace) | \`${REGISTRY_REPO}:latest\` |
+
+          Verify a download: \`sha256sum -c <file>.sha256\`
+          EOF
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "p03-atomic ${TAG}" \
+              --notes-file /tmp/notes.md
+          fi
+          gh release upload "$TAG" dist/* --clobber
