@@ -14,14 +14,10 @@
         config.allowUnfree = true;
       };
 
-      helium-browser = pkgs.callPackage ./helium.nix { };
-
       apps = with pkgs; [ ];
     in
     {
       packages.${system} = {
-        inherit helium-browser;
-
         default = pkgs.buildEnv {
           name = "p03-apps";
           paths = apps;

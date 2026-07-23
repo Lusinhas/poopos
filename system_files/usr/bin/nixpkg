@@ -26,7 +26,6 @@ resolve_ref() {
     local tok="$1"
     case "$tok" in
         *:*|*\#*) printf '%s\n' "$tok" ;;
-        helium-browser) printf 'path:%s#helium-browser\n' "$FLAKE" ;;
         *) printf 'nixpkgs#%s\n' "$tok" ;;
     esac
 }
