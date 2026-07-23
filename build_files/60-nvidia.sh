@@ -8,7 +8,9 @@ if [ "${INCLUDE_NVIDIA:-1}" != "1" ]; then
 fi
 
 log "Installing kernel-matched NVIDIA open module (kernel-p03-nvidia-open)"
-dnf5i kernel-p03-nvidia-open
+KERNEL_INSTALL_BYPASS=1 dnf5i kernel-p03-nvidia-open
+KVER="$(cat /usr/share/bootc-p03/kernel-version 2>/dev/null || p03_kver)"
+depmod -a "${KVER}" || true
 
 NV_VER="${NVIDIA_DRIVER_VERSION:-$(rpm -q --queryformat '%{SUMMARY}\n' kernel-p03-nvidia-open \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)}"
