@@ -91,7 +91,7 @@ jobs:
           ls -lh dist
 
       - name: Upload standard ISO
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ${{ env.IMAGE_NAME }}-standard-${{ steps.ver.outputs.label }}
           path: dist/${{ env.IMAGE_NAME }}-standard.iso*
@@ -100,7 +100,7 @@ jobs:
           retention-days: 14
 
       - name: Upload NVIDIA ISO
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ${{ env.IMAGE_NAME }}-nvidia-${{ steps.ver.outputs.label }}
           path: dist/${{ env.IMAGE_NAME }}-nvidia.iso*
